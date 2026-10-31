@@ -20,7 +20,7 @@ Secrets and settings are read from `.env` files only (all git-ignored, each with
 
 | File | Used by | Holds |
 | --- | --- | --- |
-| `.env` | docker compose | `POSTGRES_DB/USER/PASSWORD`, `WEB_PORT`, `DB_PORT`, `API_PORT` |
+| `.env` | docker compose | `POSTGRES_DB/USER/PASSWORD`, `SITE_ADDRESS`, `DB_PORT`, `API_PORT` |
 | `backend/.env` | Django | `DJANGO_SECRET_KEY` (required), `DJANGO_ALLOWED_HOSTS` (required), debug, CORS, upstream URLs, throttles |
 | `frontend/.env` | Vite | `VITE_API_URL` (empty = same origin), `API_PROXY` |
 
@@ -36,11 +36,11 @@ python -c "import secrets; print(secrets.token_urlsafe(50))"
 # local: Postgres + Django runserver + Vite, source mounted for hot reload
 docker compose -f docker-compose.local.yml up --build      # http://localhost:5173 (API on :8000)
 
-# production build: Postgres + gunicorn + nginx serving the built SPA and proxying /api
-docker compose up -d --build                                # http://localhost:${WEB_PORT}
+# production build: Postgres + gunicorn + nginx (static SPA) behind Caddy, which routes /api and handles HTTPS
+docker compose up -d --build                                # http://localhost when SITE_ADDRESS=:80
 ```
 
-Each service has its own Dockerfile (`Dockerfile` for production, `Dockerfile.local` for development). The production API image is a multi-stage build that runs as a non-root user, applies migrations on start and sits behind nginx, so the browser only talks to one origin. Only nginx publishes a port; the database stays on the internal network.
+Each service has its own Dockerfile (`Dockerfile` for production, `Dockerfile.local` for development). The production API image is a multi-stage build that runs as a non-root user, applies migrations on start and sits behind Caddy (`Caddyfile` at the repo root, its own compose service), so the browser only talks to one origin. Only Caddy publishes ports (80/443, with automatic Let's Encrypt certificates when `SITE_ADDRESS` is a domain); the database stays on the internal network.
 
 ## Run without Docker
 
@@ -116,9 +116,17 @@ Send the token as `Authorization: Token <key>`.
 - Slider moves only update a ~50-point GeoJSON source.
 - Route geometry is simplified server-side (Douglas–Peucker) and responses are gzipped (~20 KB for a 1,000-mile trip).
 
-## Deploy
+## Deploy to a server (EC2 + Docker)
 
-`render.yaml` is a Render blueprint (Django on gunicorn + PostgreSQL + static Vite site; migrations run in the build step). After the first deploy set `CORS_ALLOWED_ORIGINS` on the API to the site URL and `VITE_API_URL` on the site to the API URL, then redeploy the site. Backend settings are the keys in `backend/.env.example` plus `DATABASE_URL` (defaults to local SQLite) and `NUM_PROXIES` (set to `1` behind nginx so throttling sees real client IPs).
+1. Open ports 80, 443 (TCP and UDP) in the security group; keep 22 restricted to your IP. Install Docker with the compose plugin.
+2. Copy the repo to the server and create the three production env files from the `.env.example` files (`SITE_ADDRESS` = your domain or public DNS name, `DJANGO_ALLOWED_HOSTS` and `CORS_ALLOWED_ORIGINS` to match, `NUM_PROXIES=1`, fresh `DJANGO_SECRET_KEY` and `POSTGRES_PASSWORD`).
+3. `docker compose up -d --build`. Caddy obtains the certificate on first request; the app is then served at `https://<SITE_ADDRESS>`.
+
+The Postgres password is only applied when the data volume is first created; change it later with `ALTER USER`, not by editing `.env`.
+
+## Deploy to Render
+
+`render.yaml` is a Render blueprint (Django on gunicorn + PostgreSQL + static Vite site; migrations run in the build step). After the first deploy set `CORS_ALLOWED_ORIGINS` on the API to the site URL and `VITE_API_URL` on the site to the API URL, then redeploy the site. Backend settings are the keys in `backend/.env.example` plus `DATABASE_URL` (defaults to local SQLite) and `NUM_PROXIES` (set to `1` behind Caddy so throttling sees real client IPs).
 
 ## Known limitations
 
